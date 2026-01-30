@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sheep Fight Battle</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka+One&family=Nunito:wght@700&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+
+    <div id="game-container">
+        <!-- Background Image Container -->
+        <div class="game-bg"></div>
+
+        <!-- Bot HUD (Top) -->
+        <div class="hud-bar top-bar">
+            <div class="avatar-container">
+                <div class="wood-frame">
+                    <div class="avatar-img bot-avatar"></div>
+                </div>
+                <div class="name-tag">Emily</div>
+            </div>
+            <div class="health-bar-container">
+                <div class="health-bar bot-hp-bar">
+                    <div class="hp-fill" id="bot-hp"></div>
+                    <span class="hp-text" id="bot-hp-text">100%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Left Sidebar (Unit Selection) -->
+        <div class="side-panel">
+            <div class="unit-btn selected" data-type="small">
+                <div class="wood-circle">
+                    <img src="assets/sheep_white.png" class="unit-icon">
+                </div>
+                <!-- <span class="cost">10</span> -->
+            </div>
+            <div class="unit-btn" data-type="medium">
+                <div class="wood-circle">
+                    <img src="assets/sheep_black.png" class="unit-icon">
+                </div>
+                <!-- <span class="cost">20</span> -->
+            </div>
+            <div class="unit-btn locked" data-type="large">
+                <div class="wood-circle">
+                    <!-- Placeholder for big sheep -->
+                    <img src="assets/sheep_white.png" class="unit-icon big">
+                </div>
+            </div>
+        </div>
+
+        <!-- Game Field (Lanes) -->
+        <div id="battle-field">
+            <canvas id="gameCanvas"></canvas>
+
+            <!-- Click zones for lanes -->
+            <div class="lanes-overlay">
+                <div class="lane-zone" data-lane="0"></div>
+                <div class="lane-zone" data-lane="1"></div>
+                <div class="lane-zone" data-lane="2"></div>
+                <div class="lane-zone" data-lane="3"></div>
+                <div class="lane-zone" data-lane="4"></div>
+            </div>
+        </div>
+
+        <!-- Player HUD (Bottom) -->
+        <div class="hud-bar bottom-bar">
+            <div class="avatar-container">
+                <div class="wood-frame">
+                    <div class="avatar-img player-avatar"></div>
+                </div>
+                <div class="name-tag">Hardik</div>
+            </div>
+            <div class="health-bar-container">
+                <div class="health-bar player-hp-bar">
+                    <div class="hp-fill" id="player-hp"></div>
+                    <span class="hp-text" id="player-hp-text">100%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Interactive Hand Cursor -->
+        <div id="hand-cursor">👆</div>
+
+        <!-- UI Screens -->
+        <div id="start-screen" class="screen">
+            <div class="modal wood-modal">
+                <h1>Sheep Fight</h1>
+                <p>Strategy Battle</p>
+                <button id="start-btn" class="wood-btn">BATTLE!</button>
+            </div>
+        </div>
+
+        <div id="game-over-screen" class="screen hidden">
+            <div class="modal wood-modal">
+                <h1 id="result-title">Victory!</h1>
+                <button id="restart-btn" class="wood-btn">REPLAY</button>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="game.js"></script>
+</body>
+
+</html>
