@@ -5,7 +5,7 @@
 
 /* --- Config --- */
 const CONFIG = {
-    LANES: 5,
+    LANES: 4,
     BASE_SPEED: 1.5,
     SPAWN_COOLDOWN: 500, // ms
     MAX_HP: 1000,
