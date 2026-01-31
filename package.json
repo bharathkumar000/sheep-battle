@@ -2,14 +2,15 @@
   "name": "sheep-battle",
   "version": "1.0.0",
   "description": "Sheep Battle Game",
-  "main": "game.js",
+  "main": "server.js",
   "scripts": {
-    "dev": "npx http-server ."
+    "start": "node server.js",
+    "dev": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "http-server": "^14.1.1"
+    "express": "^4.18.2"
   }
 }
