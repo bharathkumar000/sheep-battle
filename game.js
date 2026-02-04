@@ -7,9 +7,18 @@
 const CONFIG = {
     LANES: 5,
     FPS: 60,
-    BASE_HP: 100, // Legacy support
-    MAX_HP: 100,  // New standard
-    PLAYER_COOLDOWN: 400, // ms between spawns
+    BASE_HP: 100,
+    MAX_HP: 200,
+    PLAYER_COOLDOWN: 0,
+};
+
+/* --- LEVEL SYSTEM --- */
+const LEVELS = {
+    1: { name: 'Training Day', botSpeed: 0.5, botAggro: 0.3, theme: 'light', hp: 100 },
+    2: { name: 'Skirmish', botSpeed: 0.8, botAggro: 0.6, theme: 'light', hp: 150 },
+    3: { name: 'Blitz', botSpeed: 1.2, botAggro: 0.8, theme: 'desert', hp: 200 }, // Fast
+    4: { name: 'Heavy Duty', botSpeed: 0.9, botAggro: 0.7, theme: 'winter', hp: 250, heavyBias: true },
+    5: { name: 'Boss Fight', botSpeed: 1.5, botAggro: 1.0, theme: 'dark', hp: 300 }
 };
 
 const UNIT_TYPES = {
@@ -44,23 +53,39 @@ const UNIT_TYPES = {
 
 // Assets
 const assets = {
-    white: new Image(),
-    black: new Image()
+    white_small: new Image(),
+    white_medium: new Image(),
+    white_heavy: new Image(),
+    black_small: new Image(),
+    black_medium: new Image(),
+    black_heavy: new Image()
 };
 
 // Asset Loading Promise
 let assetsLoadedCount = 0;
 const onAssetLoad = () => {
     assetsLoadedCount++;
-    console.log('Asset loaded:', assetsLoadedCount);
-    if (assetsLoadedCount >= 2) {
+    if (assetsLoadedCount >= 6) {
         state.assetsLoaded = true;
         console.log('All assets loaded');
     }
 };
 
-assets.white.onload = onAssetLoad;
-assets.black.onload = onAssetLoad;
+assets.white_small.onload = onAssetLoad;
+assets.white_medium.onload = onAssetLoad;
+assets.white_heavy.onload = onAssetLoad;
+assets.black_small.onload = onAssetLoad;
+assets.black_medium.onload = onAssetLoad;
+assets.black_heavy.onload = onAssetLoad;
+
+assets.white_small.src = 'assets/sheep_white_small.png';
+assets.white_medium.src = 'assets/sheep_white_medium.png';
+assets.white_heavy.src = 'assets/sheep_white_heavy.png';
+assets.black_small.src = 'assets/sheep_black_small.png';
+assets.black_medium.src = 'assets/sheep_black_medium.png';
+assets.black_heavy.src = 'assets/sheep_black_heavy.png';
+
+// Legacy assets removed to prevent crash
 
 assets.white.src = 'assets/sheep_white.png';
 assets.black.src = 'assets/sheep_black.png';
@@ -68,6 +93,7 @@ assets.black.src = 'assets/sheep_black.png';
 /* --- Game State --- */
 let state = {
     running: false,
+    paused: false,
     playerHP: CONFIG.MAX_HP,
     botHP: CONFIG.MAX_HP,
     lanes: [], // Array of 5 lane objects
@@ -78,7 +104,23 @@ let state = {
     // Juice Systems
     particles: [], // {x, y, vx, vy, color, life, size}
     floaters: [],  // {x, y, text, color, life, vy}
-    shake: 0       // Screen shake intensity
+    shake: 0,       // Screen shake intensity
+    // Settings
+    volume: 0.5,
+    skin: 'default',
+    theme: 'light',
+    // Inventory System
+    inventory: {
+        small: 1,
+        medium: 1,
+        heavy: 1
+    },
+    botInventory: {
+        small: 1,
+        medium: 1,
+        heavy: 1
+    },
+    inventoryTimer: 0
 };
 
 // Lane Structure: { playerUnits: [], botUnits: [], netPush: 0 }
@@ -88,33 +130,279 @@ let lastTime = 0;
 let botTimer = 0;
 let nextUnitId = 0;
 
+/* --- Audio System (Simple) --- */
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function playClickSound() {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(300, audioCtx.currentTime + 0.1);
+
+    gainNode.gain.setValueAtTime(state.volume * 0.2, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.1);
+}
+
 /* --- Initialization --- */
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 let laneWidth = 0;
 
 function init() {
+    console.log("Initializing Game...");
+
+    // Safety Helper
+    const safeAddListener = (id, event, cb) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener(event, cb);
+        else console.warn(`Element ${id} not found`);
+    };
+
     setupLanes();
     resize();
     window.addEventListener('resize', resize);
 
-    // UI Listeners
+    // --- INPUT HANDLING (Touch & Keyboard) ---
+    // Touch Logic for Unit Buttons
     document.querySelectorAll('.unit-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        const handler = (e) => {
+            e.preventDefault();
             selectUnit(btn.dataset.type);
-        });
+        };
+        btn.addEventListener('touchstart', handler, { passive: false });
+        btn.addEventListener('click', handler);
     });
 
+    // Touch Logic for Lanes
     document.querySelectorAll('.lane-zone').forEach(zone => {
-        zone.addEventListener('click', () => {
-            const laneId = parseInt(zone.dataset.lane);
-            spawnPlayerUnit(laneId);
+        const handler = (e) => {
+            e.preventDefault();
+            spawnPlayerUnit(parseInt(zone.dataset.lane));
+        };
+        zone.addEventListener('touchstart', handler, { passive: false });
+        zone.addEventListener('click', handler);
+    });
+
+    // Re-attach Settings Listeners
+    safeAddListener('restart-btn', 'click', resetGame);
+
+    // Settings Listeners
+    const settingsBtn = document.getElementById('settings-btn');
+    const settingsModal = document.getElementById('settings-modal');
+    const closeSettingsBtn = document.getElementById('close-settings-btn');
+
+    // Helper for both click and touch
+    const addInput = (elem, cb) => {
+        if (!elem) return;
+        elem.addEventListener('click', cb);
+        elem.addEventListener('touchstart', (e) => {
+            if (e.cancelable) e.preventDefault();
+            cb(e);
+        }, { passive: false });
+    };
+
+    addInput(settingsBtn, () => {
+        state.paused = true;
+        if (settingsModal) settingsModal.classList.remove('hidden');
+    });
+
+    addInput(closeSettingsBtn, () => {
+        state.paused = false;
+        if (settingsModal) settingsModal.classList.add('hidden');
+    });
+
+    // Sliders & Buttons
+    safeAddListener('volume-slider', 'input', (e) => {
+        state.volume = parseFloat(e.target.value);
+    });
+
+    safeAddListener('brightness-slider', 'input', (e) => {
+        const container = document.getElementById('game-container');
+        if (container) container.style.filter = `brightness(${e.target.value})`;
+    });
+
+    // Skins/Themes
+    document.querySelectorAll('.skin-btn').forEach(btn => {
+        addInput(btn, () => {
+            document.querySelectorAll('.skin-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            state.skin = btn.dataset.skin;
         });
     });
 
-    document.getElementById('restart-btn').addEventListener('click', resetGame);
+    document.querySelectorAll('.theme-btn').forEach(btn => {
+        addInput(btn, () => {
+            document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            state.theme = btn.dataset.theme;
+            if (state.theme === 'dark') document.body.classList.add('dark-mode');
+            else document.body.classList.remove('dark-mode');
+        });
+    });
 
+    // Keyboard Logic
+    window.addEventListener('keydown', (e) => {
+        if (state.paused || !state.running) return;
+
+        if (e.key === 'q' || e.key === 'Q') selectUnit('small');
+        if (e.key === 'w' || e.key === 'W') selectUnit('medium');
+        if (e.key === 'e' || e.key === 'E') selectUnit('heavy');
+
+        if (['1', '2', '3', '4', '5'].includes(e.key)) {
+            const laneId = parseInt(e.key) - 1;
+            spawnPlayerUnit(laneId);
+        }
+    });
+
+    // --- Navigation Listeners ---
+    addInput(document.getElementById('play-btn'), () => {
+        console.log("Play Button Clicked");
+        showScreen('level-select-screen');
+    });
+
+    addInput(document.getElementById('back-home-btn'), () => {
+        showScreen('start-screen');
+    });
+
+    // Level Selection
+    updateLevelGrid(); // Initial render
+
+    const startScreen = document.getElementById('start-screen');
+    if (startScreen) startScreen.classList.remove('hidden');
+
+    // Start loop
+    requestAnimationFrame(loop);
+}
+
+function updateLevelGrid() {
+    const grid = document.querySelector('.level-grid');
+    grid.innerHTML = ''; // Clear
+
+    const unlocked = parseInt(localStorage.getItem('unlockedLevel') || 1);
+
+    for (let i = 1; i <= 5; i++) {
+        const card = document.createElement('div');
+        card.className = `level-card ${i <= unlocked ? 'unlocked' : 'locked'}`;
+        card.dataset.level = i;
+
+        // Stars (random for now or stored)
+        const starCount = localStorage.getItem(`level_${i}_stars`) || 0;
+        let starsStr = '';
+        for (let s = 0; s < 3; s++) starsStr += s < starCount ? '★' : '☆';
+
+        card.innerHTML = `
+            <div class="level-num">${i}</div>
+            <div class="stars">${starsStr}</div>
+        `;
+
+        card.addEventListener('click', () => {
+            if (card.classList.contains('locked')) return;
+            startGame(i);
+        });
+
+        grid.appendChild(card);
+    }
+}
+
+function showScreen(screenId) {
+    // Hide all screens
+    document.querySelectorAll('.screen').forEach(s => s.classList.add('hidden'));
+
+    // Show target if not null (gameplay = null)
+    if (screenId) {
+        document.getElementById(screenId).classList.remove('hidden');
+    }
+}
+
+function updateTheme(themeName) {
+    document.body.classList.remove('dark-mode', 'theme-desert', 'theme-winter');
+    if (themeName === 'dark') document.body.classList.add('dark-mode');
+    // Add other theme classes if we define them later
+}
+
+function startGame(level) {
+    console.log('Starting Level ' + level);
+    state.currentLevel = level;
+
+    // Apply Level Config
+    const cfg = LEVELS[level];
+    if (cfg) {
+        state.botSpeedMultiplier = cfg.botSpeed;
+        state.botAggro = cfg.botAggro;
+        state.botHP = cfg.hp;
+        // Apply theme
+        updateTheme(cfg.theme);
+    }
+    state.playerHP = CONFIG.MAX_HP;
+
+    // Hide all screens -> Gameplay
+    showScreen(null);
     resetGame();
+}
+
+function winLevel() {
+    state.winner = 0;
+    const current = state.currentLevel || 1;
+    const next = current + 1;
+
+    // Save Progress
+    const unlocked = parseInt(localStorage.getItem('unlockedLevel') || 1);
+    if (next > unlocked && next <= 5) {
+        localStorage.setItem('unlockedLevel', next);
+    }
+
+    // Save Stars (Mock: 3 stars for win)
+    localStorage.setItem(`level_${current}_stars`, 3);
+
+    setTimeout(() => {
+        alert('Level Complete! Unlocked Level ' + next);
+        showScreen('level-select-screen');
+        updateLevelGrid();
+    }, 1000);
+}
+
+/* --- Game Logic --- */
+
+let accumulator = 0;
+const FIXED_STEP = 1000 / 60; // Target 60 FPS Logic
+
+function loop(timestamp) {
+    if (!lastTime) lastTime = timestamp;
+    let dt = timestamp - lastTime;
+    if (dt > 1000) dt = 1000; // Cap large lags (tab switching)
+    lastTime = timestamp;
+
+    accumulator += dt;
+
+    while (accumulator >= FIXED_STEP) {
+        if (state.running && !state.paused) {
+            update(FIXED_STEP);
+            updateFloaters();
+            updateParticles();
+
+            // Shake Decay
+            if (state.shake > 0) state.shake *= 0.9;
+            if (state.shake < 0.5) state.shake = 0;
+        }
+        accumulator -= FIXED_STEP;
+    }
+
+    // Always draw? Or only if running?
+    // If paused, we still want to draw (maybe dimmed?)
+    // Existing code wrapped draw in if(state.running) originally.
+    if (state.running) {
+        draw();
+    }
+
     requestAnimationFrame(loop);
 }
 
@@ -137,6 +425,7 @@ function resize() {
 
 function resetGame() {
     state.running = true;
+    state.paused = false; // reset pause
     state.playerHP = CONFIG.MAX_HP;
     state.botHP = CONFIG.MAX_HP;
     state.winner = null;
@@ -157,43 +446,6 @@ function selectUnit(type) {
     if (btn) btn.classList.add('selected');
 }
 
-/* --- Game Logic --- */
-
-let accumulator = 0;
-const FIXED_STEP = 1000 / 60; // Target 60 FPS Logic
-
-function loop(timestamp) {
-    if (!lastTime) lastTime = timestamp;
-    let dt = timestamp - lastTime;
-    if (dt > 1000) dt = 1000; // Cap large lags (tab switching)
-    lastTime = timestamp;
-
-    accumulator += dt;
-
-    while (accumulator >= FIXED_STEP) {
-        if (state.running) {
-            update(FIXED_STEP);
-            updateFloaters();
-            updateParticles();
-
-            // Shake Decay
-            if (state.shake > 0) state.shake *= 0.9;
-            if (state.shake < 0.5) state.shake = 0;
-        }
-        accumulator -= FIXED_STEP;
-    }
-
-    if (state.running) {
-        draw();
-    }
-
-    // Always keep animating for UI/Clouds (if drawn in draw?)
-    // Actually draw() clears canvas. If we don't draw when !running, canvas freezes.
-    // Ideally we draw always? 
-    // Existing code only drew if running. Let's stick to that to avoid errors.
-
-    requestAnimationFrame(loop);
-}
 
 function update(dt) {
     // Bot Logic (Every 2 seconds)
@@ -208,13 +460,48 @@ function update(dt) {
         updateLane(lane, laneIndex);
     });
 
+    // Inventory Replenish Logic (Every 3 seconds)
+    state.inventoryTimer += dt;
+    if (state.inventoryTimer > 3000) {
+        replenishInventory();
+        state.inventoryTimer = 0;
+    }
+
     checkGameOver();
 }
 
-function botAction() {
-    // Randomly generate small, medium, or heavy sheep
+function replenishInventory() {
+    // Random 1 sheep added for PLAYER
     const types = ['small', 'medium', 'heavy'];
-    const randomType = types[Math.floor(Math.random() * types.length)];
+    let type = types[Math.floor(Math.random() * types.length)];
+
+    // Cap at 9
+    if (state.inventory[type] < 9) {
+        state.inventory[type]++;
+    }
+
+    // Random 1 sheep added for BOT
+    type = types[Math.floor(Math.random() * types.length)];
+    if (state.botInventory[type] < 9) {
+        state.botInventory[type]++;
+    }
+
+    updateUI();
+}
+
+function botAction() {
+    const types = ['small', 'medium', 'heavy'];
+
+    // Filter available types
+    const availableTypes = types.filter(t => state.botInventory[t] > 0);
+
+    if (availableTypes.length === 0) return; // No sheep available
+
+    // Pick random available type
+    const randomType = availableTypes[Math.floor(Math.random() * availableTypes.length)];
+
+    // Consume inventory
+    state.botInventory[randomType]--;
 
     // Pick a random lane
     const randomLane = Math.floor(Math.random() * CONFIG.LANES);
@@ -228,7 +515,12 @@ function spawnPlayerUnit(laneIdx) {
     // Cooldown check
     const now = performance.now();
     if (now - (state.lastSpawnTime || 0) < CONFIG.PLAYER_COOLDOWN) return;
+
+    // Inventory Check
+    if (state.inventory[state.selectedUnit] <= 0) return;
+
     state.lastSpawnTime = now;
+    state.inventory[state.selectedUnit]--; // Consume 1
 
     const unitType = UNIT_TYPES[state.selectedUnit];
 
@@ -274,82 +566,165 @@ function createUnit(laneIdx, type, team) {
 }
 
 function updateLane(lane, laneIndex) {
-    // 1. Calculate Total Strength per team
-    let pStr = lane.playerUnits.reduce((sum, u) => sum + u.str, 0);
-    let bStr = lane.botUnits.reduce((sum, u) => sum + u.str, 0);
+    // 1. Sort Units by Y position to ensure correct processing order
+    // Player: Ascending Y (0 -> Height) - Leader is smallest Y
+    lane.playerUnits.sort((a, b) => a.y - b.y);
+    // Bot: Descending Y (Height -> 0) - Leader is largest Y
+    lane.botUnits.sort((a, b) => b.y - a.y);
 
-    // 2. Determine Lane State
-    // Net Force: Positive = Player Pushes Up? or Logic says "Sum Left - Sum Right"
-    // In Vertical: Player pushes Up (negative Y delta), Bot pushes Down (positive Y delta)
+    // 2. Identify Leaders
+    const pLead = lane.playerUnits[0];
+    const bLead = lane.botUnits[0];
 
-    // If collision happens (units meet):
-    // Find leading units
-    let pLead = getLeadingUnit(lane.playerUnits, 0); // Lowest Y
-    let bLead = getLeadingUnit(lane.botUnits, 1);    // Highest Y
+    let pPushStr = 0;
+    let bPushStr = 0;
+    let engaging = false;
 
-    let interacting = false;
+    // 3. Resolve Interaction (Head-to-Head)
     if (pLead && bLead) {
-        // Check distance
-        if (pLead.y - bLead.y < 60) { // Close enough to push
-            interacting = true;
+        // Distance check
+        const dist = Math.abs(pLead.y - bLead.y);
+        const minDist = pLead.radius + bLead.radius; // Touch distance
+
+        // Interaction Range (Slightly larger than touch to start fight)
+        if (dist < minDist + 10) {
+            engaging = true;
+
+            // Calculate Stack Strength (Only connected units)
+            pPushStr = calculateStackStrength(lane.playerUnits);
+            bPushStr = calculateStackStrength(lane.botUnits);
+
+            // Determine Net Force
+            // Net Speed for Leaders
+            let moveSpeed = 0;
+            if (pPushStr > bPushStr) {
+                moveSpeed = -0.5; // Player Wins (Move Up)
+            } else if (bPushStr > pPushStr) {
+                moveSpeed = 0.5; // Bot Wins (Move Down)
+            } else {
+                moveSpeed = 0; // Stalemate
+                // Juice
+                if (Math.random() < 0.3) {
+                    spawnParticles((pLead.x + bLead.x) / 2, (pLead.y + bLead.y) / 2, '#fff', 2);
+                }
+            }
+
+            // Apply to Leaders (They effectively block each other)
+            pLead.y += moveSpeed;
+            bLead.y += moveSpeed;
         }
     }
 
-    // Movement Logic
+    // 4. Update Player Units (Chain Logic)
+    for (let i = 0; i < lane.playerUnits.length; i++) {
+        let u = lane.playerUnits[i];
 
-    // Player Units
-    if (!interacting) {
-        // Move freely Up
-        moveUnits(lane.playerUnits, -1, 1.5); // Base move speed
-    } else {
-        // Pushing Battle!
-        if (pStr > bStr) {
-            // Player Stronger: Push Up (Bot retreats Up, Player advances Up)
-            moveUnits(lane.playerUnits, -1, 0.5); // Slow advance
-            moveUnits(lane.botUnits, -1, 0.5);    // Pushed back
-        } else if (bStr > pStr) {
-            // Bot Stronger: Push Down
-            moveUnits(lane.playerUnits, 1, 0.5); // Pushed back
-            moveUnits(lane.botUnits, 1, 0.5);    // Advance
+        // If Leader and NOT engaging, move freely
+        if (i === 0) {
+            if (!engaging) {
+                u.y -= u.speed * 1.5;
+            }
         } else {
-            // Stalemate - No move
-            // Juice: Sparks flying during clash!
-            if (Math.random() < 0.3) {
-                spawnParticles((pLead.x + bLead.x) / 2, (pLead.y + bLead.y) / 2, '#fff', 2);
+            // Follower Logic
+            let leader = lane.playerUnits[i - 1];
+            let idealDist = u.radius + leader.radius + 5; // +5 buffer
+            let currentDist = Math.abs(u.y - leader.y);
+            let idealY = leader.y + idealDist;
+
+            if (u.y > idealY) {
+                // Gap exists: Run forward to catch up
+                // Don't overshoot
+                let moveAmount = u.speed * 1.5;
+                if (u.y - moveAmount < idealY) {
+                    u.y = idealY; // Snap to stack
+                } else {
+                    u.y -= moveAmount;
+                }
+            } else {
+                // Too close or touching: Stacked
+                // Strict collision: Ensure we don't phase through
+                if (u.y < idealY) {
+                    u.y = idealY;
+                }
             }
         }
     }
 
-    // Bot Units (Free movement if no interaction)
-    if (!interacting) {
-        moveUnits(lane.botUnits, 1, 1.5);
+    // 5. Update Bot Units (Chain Logic)
+    for (let i = 0; i < lane.botUnits.length; i++) {
+        let u = lane.botUnits[i];
+
+        // If Leader and NOT engaging
+        if (i === 0) {
+            if (!engaging) {
+                u.y += u.speed * 1.5;
+            }
+        } else {
+            // Follower Logic
+            let leader = lane.botUnits[i - 1];
+            let idealDist = u.radius + leader.radius + 5;
+            let idealY = leader.y - idealDist;
+
+            if (u.y < idealY) {
+                // Gap exists: Run forward
+                let moveAmount = u.speed * 1.5;
+                if (u.y + moveAmount > idealY) {
+                    u.y = idealY;
+                } else {
+                    u.y += moveAmount;
+                }
+            } else {
+                // Stacked
+                if (u.y > idealY) {
+                    u.y = idealY;
+                }
+            }
+        }
     }
 
-    // 3. Check Base Hits & Cleanup
-
-    // Check Player Units hitting Top (Bot Base)
+    // 6. Base Hit Logic (Cleanup)
+    // Player Hitting Top
     for (let i = lane.playerUnits.length - 1; i >= 0; i--) {
         let u = lane.playerUnits[i];
-        if (u.y < 10) { // Hit Top
-            damageBase(1, u.str); // Damage Bot
+        if (u.y < 10) {
+            damageBase(1, u.str);
             spawnParticles(u.x, 10, '#e74c3c', 10);
             state.shake = 5;
             spawnFloater(u.x, 40, `-${u.str}`, '#e74c3c');
             lane.playerUnits.splice(i, 1);
         }
     }
-
-    // Check Bot Units hitting Bottom (Player Base)
+    // Bot Hitting Bottom
     for (let i = lane.botUnits.length - 1; i >= 0; i--) {
         let u = lane.botUnits[i];
-        if (u.y > canvas.height - 10) { // Hit Bottom
-            damageBase(0, u.str); // Damage Player
+        if (u.y > canvas.height - 10) {
+            damageBase(0, u.str);
             spawnParticles(u.x, canvas.height - 10, '#f1c40f', 10);
             state.shake = 5;
             spawnFloater(u.x, canvas.height - 40, `-${u.str}`, '#f1c40f');
             lane.botUnits.splice(i, 1);
         }
     }
+}
+
+function calculateStackStrength(units) {
+    if (!units.length) return 0;
+
+    let totalStr = units[0].str; // Leader always contributes
+    for (let i = 1; i < units.length; i++) {
+        let u = units[i];
+        let prev = units[i - 1];
+        let idealDist = u.radius + prev.radius + 15; // Tolerance for "connected"
+
+        // Distance check
+        if (Math.abs(u.y - prev.y) <= idealDist) {
+            totalStr += u.str;
+        } else {
+            // Break chain if gap found
+            break;
+        }
+    }
+    return totalStr;
 }
 
 function getLeadingUnit(units, team) {
@@ -453,8 +828,13 @@ function draw() {
 }
 
 function drawLaneStrength(lane, idx) {
-    const pStr = lane.playerUnits.reduce((sum, u) => sum + u.str, 0);
-    const bStr = lane.botUnits.reduce((sum, u) => sum + u.str, 0);
+    // Show ACTIVE Stack Strength (The power currently pushing)
+    // Sort first just in case (Draw is called separate from Update)
+    const pUnitsSorted = [...lane.playerUnits].sort((a, b) => a.y - b.y);
+    const bUnitsSorted = [...lane.botUnits].sort((a, b) => b.y - a.y);
+
+    const pStr = calculateStackStrength(pUnitsSorted);
+    const bStr = calculateStackStrength(bUnitsSorted);
 
     if (pStr === 0 && bStr === 0) return;
 
@@ -537,189 +917,42 @@ function drawBadge(ctx, x, y, value, color) {
 }
 
 function drawUnit(u) {
-    // Determine type key based on radius
-    let typeKey = 'small';
-    if (u.radius > 28) typeKey = 'heavy';
-    else if (u.radius > 22) typeKey = 'medium';
+    // Determine type key based on type object
+    // u.type.id should be small/medium/heavy
+    let typeKey = u.type.id;
+    let teamKey = u.team === 0 ? 'black' : 'white'; // Player=0(Black), Bot=1(White)
 
-    // Call Procedural Renderer
-    // Use u.speed for animation freq
-    drawProceduralSheep(ctx, u.x, u.y, u.radius, u.team === 0, typeKey, u.speed);
-}
+    // Construct asset key
+    const assetKey = `${teamKey}_${typeKey}`;
+    const img = assets[assetKey];
 
-function drawProceduralSheep(ctx, x, y, radius, isPlayer, typeKey, speed) {
+    if (!img) return;
+
     ctx.save();
+    ctx.translate(u.x, u.y);
 
-    // Animation Time
-    const time = Date.now() / 1000;
-    const walkSpeed = speed * (typeKey === 'heavy' ? 15 : 12);
-    const walkCycle = Math.sin(time * walkSpeed); // -1 to 1
-    const bounce = Math.abs(Math.sin(time * walkSpeed * 2)) * 0.08;
+    // Flip for Bot? Top-down usually doesn't flip Y unless you want them upside down.
+    // Bot is Team 1 (Top). Player is Team 0 (Bottom).
+    // If images are "From Front", Player's sheep should face UP (their back to camera? No, "From Front" usually means looking AT camera).
+    // User asked "face look from front".
+    // 3D images generated are front-facing (looking at viewer).
+    // Since it's a lane pusher, units usually face each other?
+    // Player units move UP. If they look at camera, they are facing "backwards" relative to movement?
+    // Or maybe "Front View" means we see their face.
+    // Let's draw them upright.
 
-    // Colors (Strictly White & Black Wool)
-    let woolColor = '#ffffff';
-    let woolShadow = '#e0e0e0';
-    let faceColor = '#FFAB91'; // Peach/Pink Face Default
-    const hoofColor = '#3E2723';
+    // Scale
+    const scale = u.radius / 25; // Base radius approx 25?
+    ctx.scale(scale, scale);
 
-    // Determine Wool Color (White/Black)
-    if (typeKey === 'medium') {
-        woolColor = '#212121'; // Black
-        woolShadow = '#000000';
-    }
-
-    if (!isPlayer) {
-        // Bot Face is Grey
-        faceColor = '#BDBDBD';
-    }
-
-    // Scale/Transform
-    ctx.translate(x, y);
-    if (!isPlayer) {
-        ctx.scale(1, -1);
-    }
-
-    // --- DUST PARTICLES (Excitement!) ---
-    // Spawn dust occasionally if moving
-    if (Math.random() < 0.03 * speed) {
-        // Global helper call
-        // Offset Y slightly to be at "feet" level
-        // Need to untranslate X/Y because spawnParticles uses global coords
-        // Actually we are inside translate(x,y). 
-        // spawnParticles takes Global.
-        // So we assume Global X/Y is x, y + radius.
-        // We can't call it easily from inside translate context without coord math?
-        // Wait, 'x' and 'y' passed to function ARE global.
-        // So we can call it.
-        // Feet Y = y + radius * 0.5 (approx).
-        spawnParticles(x + (Math.random() - 0.5) * radius, y + radius * 0.5, '#D7CCC8', 1);
-    }
-
-    // --- SHADOW ---
-    ctx.fillStyle = 'rgba(0,0,0,0.15)';
-    ctx.beginPath();
-    ctx.ellipse(0, radius, radius * 0.9, radius * 0.4, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // --- LEGS (Top-Down: Short & Tucked) ---
-    // Much shorter to simulate high angle
-    const legW = radius * 0.22;
-    const legH = radius * 0.4; // Shorter (was 0.65)
-    // Higher up (under body)
-    const legY = radius * 0.2; // Was 0.4
-    const legX = radius * 0.35;
-
-    // Draw Back Legs
-    drawRealLeg(ctx, -legX, legY, legW, legH, walkCycle, faceColor, hoofColor, true);
-    drawRealLeg(ctx, legX, legY, legW, legH, -walkCycle, faceColor, hoofColor, true);
-
-    // --- BODY (Fluffy Top View) ---
-    const bodyY = -bounce * radius * 3;
-
-    // Draw Base Body (Wider for top-down)
-    ctx.fillStyle = woolColor;
-    const puffs = 8;
-    const puffRad = radius * 0.6; // Fluffier
-
-    for (let i = 0; i < puffs; i++) {
-        const angle = (i / puffs) * Math.PI * 2;
-        const px = Math.cos(angle) * (radius * 0.7);
-        const py = bodyY + Math.sin(angle) * (radius * 0.6);
-
-        const grad = ctx.createRadialGradient(px, py, puffRad * 0.2, px, py, puffRad);
-        grad.addColorStop(0, woolColor);
-        grad.addColorStop(1, woolShadow);
-        ctx.fillStyle = grad;
-
-        ctx.beginPath();
-        ctx.arc(px, py, puffRad, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
-    ctx.beginPath();
-    ctx.ellipse(0, bodyY, radius * 0.95, radius * 0.85, 0, 0, Math.PI * 2);
-    ctx.fillStyle = woolColor;
-    ctx.fill();
-
-    // --- FRONT LEGS (Barely Visible Peeking) ---
-    drawRealLeg(ctx, -legX, legY, legW, legH, walkCycle, faceColor, hoofColor, false);
-    drawRealLeg(ctx, legX, legY, legW, legH, -walkCycle, faceColor, hoofColor, false);
-
-    // --- HEAD (Top View) ---
-    // Positioned more "forward" (Negative Y in top-down logic means 'up' canvas, which is 'forward' for Player)
-    const headY = bodyY - radius * 0.6;
-    const headSize = radius * 0.55;
-
-    // Horns (If Heavy) - Removed, now ears are general.
-
-    // Ears
-    ctx.fillStyle = faceColor;
-    ctx.beginPath();
-    ctx.ellipse(-headSize * 0.8, headY, headSize * 0.4, headSize * 0.8, -0.4, 0, Math.PI * 2);
-    ctx.ellipse(headSize * 0.8, headY, headSize * 0.4, headSize * 0.8, 0.4, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Face Base
-    ctx.fillStyle = faceColor;
-    ctx.beginPath();
-    ctx.arc(0, headY, headSize, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Snout (Forward)
-    ctx.fillStyle = 'rgba(0,0,0,0.1)';
-    ctx.beginPath();
-    ctx.ellipse(0, headY - headSize * 0.2, headSize * 0.4, headSize * 0.25, 0, 0, Math.PI * 2); // Snout is "higher" (more forward)
-    ctx.fill();
-
-    // Wool Cap
-    ctx.fillStyle = woolColor;
-    ctx.beginPath();
-    ctx.arc(0, headY - headSize * 0.3, headSize * 0.6, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Eyes (Visible from top)
-    ctx.fillStyle = '#000';
-    const eyeSep = headSize * 0.4;
-    const eyeY = headY - headSize * 0.1; // Further back
-    ctx.beginPath(); ctx.arc(-eyeSep, eyeY, 2.5, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(eyeSep, eyeY, 2.5, 0, Math.PI * 2); ctx.fill();
-
-    // Eye Shine
-    ctx.fillStyle = '#fff';
-    ctx.beginPath(); ctx.arc(-eyeSep + 1, eyeY - 1, 1, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(eyeSep + 1, eyeY - 1, 1, 0, Math.PI * 2); ctx.fill();
+    // Draw Image centered
+    // Images are roughly square.
+    const size = 60; // Base size
+    ctx.drawImage(img, -size / 2, -size / 2, size, size);
 
     ctx.restore();
 }
 
-function drawRealLeg(ctx, x, y, w, h, swing, skinColor, hoofColor, isShadow) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(swing * 0.4);
-
-    // Leg
-    ctx.fillStyle = isShadow ? shadeColor(skinColor, -20) : skinColor;
-    if (isShadow) ctx.filter = 'brightness(0.7)'; // Dim back legs
-
-    ctx.beginPath();
-    ctx.roundRect(-w / 2, 0, w, h, w / 3);
-    ctx.fill();
-
-    // Hoof
-    ctx.fillStyle = hoofColor;
-    ctx.beginPath();
-    ctx.roundRect(-w / 2, h - w / 2, w, w / 2, 2);
-    ctx.fill();
-
-    ctx.restore();
-}
-
-function shadeColor(color, percent) {
-    // Simple helper for hex shading if needed, or just use filter
-    // Since we use hex strings, this function is complex to implement inline.
-    // We'll rely on ctx.filter for shadowing which is supported in Canvas context.
-    return color;
-}
 
 function updateUI() {
     // HP Bars
@@ -732,12 +965,23 @@ function updateUI() {
     document.getElementById('bot-hp-fill').style.width = `${Math.max(0, bPct)}%`;
     document.getElementById('bot-hp-text').innerText = `${Math.floor(Math.max(0, bPct))}%`;
 
-    // Button Cooldown Overlay
-    const now = Date.now();
-    const cooldownRemaining = Math.max(0, CONFIG.PLAYER_COOLDOWN - (now - state.lastSpawnTime));
-    const cdPct = (cooldownRemaining / CONFIG.PLAYER_COOLDOWN) * 100;
+    // Inventory Badges & Button State
+    ['small', 'medium', 'heavy'].forEach(type => {
+        const count = state.inventory[type];
+        const badge = document.getElementById(`badge-${type}`);
+        const btn = document.querySelector(`.unit-btn[data-type="${type}"]`);
 
-    document.querySelectorAll('.unit-btn').forEach(btn => {
+        if (badge) badge.innerText = count;
+
+        // Disable Check: Cooldown OR Empty Inventory
+        const now = Date.now(); // Using Date.now() for cooldown consistent with existing code? 
+        // Wait, existing code used performance.now() in spawn but Date.now() in UI? 
+        // Let's stick to simple inventory check mostly.
+
+        // Check Cooldown
+        const cooldownRemaining = Math.max(0, CONFIG.PLAYER_COOLDOWN - (performance.now() - (state.lastSpawnTime || 0)));
+        const cdPct = (cooldownRemaining / CONFIG.PLAYER_COOLDOWN) * 100;
+
         let overlay = btn.querySelector('.cooldown-overlay');
         if (!overlay) {
             overlay = document.createElement('div');
@@ -750,13 +994,19 @@ function updateUI() {
             btn.classList.add('disabled');
         } else {
             overlay.style.height = '0%';
-            btn.classList.remove('disabled');
+            // Only enable if inventory > 0
+            if (count <= 0) {
+                btn.classList.add('disabled');
+            } else {
+                btn.classList.remove('disabled');
+            }
         }
     });
 }
 
 // Start
-init();
+// Initialize when DOM is ready
+document.addEventListener('DOMContentLoaded', init);
 
 
 // --- JUICE SYSTEM HELPERS ---
